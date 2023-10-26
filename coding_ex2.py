@@ -1,4 +1,4 @@
-# Student name: 
+# Student name: Antony Silvetti-Schmitt
 
 import math
 import numpy as np
@@ -73,12 +73,13 @@ class ExtendedKalmanFilter(Node):
         
         #noise params process noise (my gift to you :))
         self.Q = np.diag([0.1, 0.1, 0.1, 0.01, 0.01, 0.01, 0.5, 0.5, 0.5, 0.5, 0.01, 0.01, 0.01, 0.001, 0.001, 0.001])
+        
         #measurement noise
-        #GPS position and velocity
+        # GPS position and velocity -> R is the associated covariance
         self.R = np.diag([10, 10, 10, 2, 2, 2])
         
        
-        #Initialize P, the covariance matrix
+        #Initialize P, the covariance matrix (for process)
         self.P = np.diag([30, 30, 30, 3, 3, 3, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1])
         self.Pdot=self.P*0.0
         
@@ -112,15 +113,17 @@ class ExtendedKalmanFilter(Node):
 
     
     def callback_imu(self,msg):
+        
         #measurement vector = [p, q, r, fx, fy, fz, x, y, z, vx, vy, vz]
         # In practice, the IMU measurements should be filtered. In this coding exercise, we are just going to clip
+        
         # the values of velocity and acceleration to keep them in physically possible intervals.
         self.measure[0] = np.clip(msg.angular_velocity.x,-5,5) #(-5,5)
         self.measure[1] = np.clip(msg.angular_velocity.y,-5,5) #..(-5,5)
         self.measure[2] = np.clip(msg.angular_velocity.z,-5,5) #..(-5,5)
-        self.measure[3] = None #..(-6,6)
-        self.measure[4] = None #..(-6,6)
-        self.measure[5] = None #..(-16,-4) 
+        self.measure[3] = np.clip(msg.linear_acceleration.x, -6,6) #..(-6,6)
+        self.measure[4] = np.clip(msg.linear_acceleration.y, -6,6) #..(-6,6)
+        self.measure[5] = np.clip(msg.linear_acceleration.z, -16,-4) #..(-16,-4) -> this is just (-6,6) -10 for gravity
  
     def callback_gps_lat(self, msg):
         self.lat = msg.data
@@ -142,11 +145,11 @@ class ExtendedKalmanFilter(Node):
             self.flag_lon = True    
     
     def callback_gps_speed_east(self, msg): 
-        self.measure[9] = None # ..
+        self.measure[9] = msg.data # .data is right here.  Tested it.
         self.measure[11] = 0.0 # vz
 
     def callback_gps_speed_north(self, msg):
-        self.measure[10] = None # vy
+        self.measure[10] = msg.data # vy
 
    
     def ekf_callback(self):
@@ -161,6 +164,7 @@ class ExtendedKalmanFilter(Node):
     def ekf_function(self):
         
         # Adjusting angular velocities and acceleration with the corresponding bias
+
         self.p = (self.measure[0]-self.xhat[10,0])
         self.q = (self.measure[1]-self.xhat[11,0])
         self.r = self.measure[2]-self.xhat[12,0]
@@ -185,23 +189,58 @@ class ExtendedKalmanFilter(Node):
             
         #Prediction step
         #First write out all the dots for all the states, e.g. pxdot, pydot, q1dot etc
-       
+
         pxdot = self.xhat[3,0]
+        pydot = self.xhat[4,0]
+        pzdot = 0 # Pretty sure this is the right assumption
+
+        # Putting accelerations into inertial frame
+        accels = np.array([self.fx, self.fy, self.fz]) # biases already subtracted
+        print("accels shape:", accels.shape)
+
+        # self.Rot(self.q1, self.q2, self.q3, self.q4) -> using given rotation matrix instead for now
+        vdots = self.R_bi@(accels)
+
+        vxdot = vdots[0]
+        vydot = vdots[1]
+        vzdot = vdots[2]
+
+        print("vxdot: ", vxdot)
+        print("vydot: ", vydot)
+        print("vzdot: ", vzdot)
+
+        # CHECK LATER -> Not sure if the math he did in the slide is with angle in front or back
+        omegaw = self.omega(self.p, self.q,self.r)
+        qdot = (-0.5)*omegaw@np.array([self.q1,self.q2, self.q3, self.q4]) 
+
+        q1dot = qdot[0] # x part of axis of rotation -> Not quite sure how to do this yet . . . 
+        q2dot = qdot[1] # y part of axis of rotation
+        q3dot = qdot[2] # z part of axis of rotation
+        q4dot = qdot[3] # This is the angle of rotation
+        bpdot = 0
+        bqdot = 0
+        brdot = 0
+        bxdot = 0
+        bydot = 0
+        bzdot = 0
+        
+
+
         # .. your code here
         
         #Now integrate Euler Integration for Process Updates and Covariance Updates
         # Euler works fine
         # Remember again the state vector [x y z vx vy vz q1 q2 q3 q4 bp bq br bx by bz]
         self.xhat[0,0] = self.xhat[0,0] + self.dt*pxdot
-        self.xhat[1,0] = None # ..
-        self.xhat[2,0] = None # ..
-        self.xhat[3,0] = None # ..
-        self.xhat[4,0] = None # ..
-        self.xhat[5,0] = None # .. Do not forget Gravity (9.801 m/s2) 
-        self.xhat[6,0] = None # ..
-        self.xhat[7,0] = None # ..
-        self.xhat[8,0] = None # ..
-        self.xhat[9,0] = None # ..
+        self.xhat[1,0] = self.xhat[1,0] + self.dt*pydot # ..
+        self.xhat[2,0] = 0 # .. double check this
+        self.xhat[3,0] = self.xhat[3,0] + self.dt*vxdot # vx = vx + deltaT*measuredAccelx (rotated into inertial frame)
+        self.xhat[4,0] = self.xhat[4,0] + self.dt*vydot # vy = vy + deltaT*measuredAccely (rotated into inertial frame)
+        self.xhat[5,0] = self.xhat[5,0] + self.dt*(vzdot + 9.801) # .. Do not forget Gravity (9.801 m/s2) ????? -> NOT SURE WHAT TO DO HERE
+        self.xhat[6,0] = self.xhat[6,0] + self.dt*q1dot # ..
+        self.xhat[7,0] = self.xhat[7,0] + self.dt*q2dot # ..
+        self.xhat[8,0] = self.xhat[8,0] + self.dt*q3dot # ..
+        self.xhat[9,0] = self.xhat[9,0] + self.dt*q4dot # ..
 
         print("x ekf: ", self.xhat[0,0])
         print("y ekf: ", self.xhat[1,0])
@@ -210,10 +249,12 @@ class ExtendedKalmanFilter(Node):
         # Extract and normalize the quat    
         self.quat = np.array([[self.xhat[6,0], self.xhat[7,0], self.xhat[8,0], self.xhat[9,0]]]).T
         # .. Normailize quat
-        #self.quat = None .. # code here. Uncomment this line
+
+        magnitude = np.sqrt(self.quat[0,0]**2 + self.quat[1,0]**2 + self.quat[2,0]**2 + self.quat[3,0]**2)
+        self.quat = self.quat/magnitude # code here. Uncomment this line
         
         #re-assign quat
-        self.xhat[6,0] = self.quat[0,0]
+        self.xhat[6,0] = self.quat[0,0] # Need to double index b/c that is how it is defined from some reason
         self.xhat[7,0] = self.quat[1,0]
         self.xhat[8,0] = self.quat[2,0]
         self.xhat[9,0] = self.quat[3,0]
@@ -221,32 +262,38 @@ class ExtendedKalmanFilter(Node):
                 
         # Now write out all the partials to compute the transition matrix Phi
         #delV/delQ
+        # TRIPLE CHECK THIS LATER, once again, not sure if the math is done with right quaternion order
+
+        Fvq = self.dfvq(self.quat[0,0], self.quat[1,0], self.quat[2,0], self.quat[3,0], self.fx, self.fy, self.fz)
         
-        Fvq = None # ..
         #delV/del_abias
-        
-        Fvb = None # ..
+        # Fvb = -self.Rot(self.quat[0,0], self.quat[1,0], self.quat[2,0], self.quat[3,0]) -> using given rotation matrix
+        Fvb = -self.R_bi
         
         #delQ/delQ
-        
-        Fqq = None # ..
+        Fqq = -0.5*omegaw # using the omega from above
      
         #delQ/del_gyrobias
-        Fqb = None # ..
+        Fqb = self.fqb(self.quat[0,0], self.quat[1,0], self.quat[2,0], self.quat[3,0]) # ..
+
+
         # Now assemble the Transition matrix A
-        
-        A = None # ..
+        A = self.createA(fvq=Fvq, fqq= Fqq, fqb=Fqb, fvb= Fvb) 
         
         #Propagate the error covariance matrix, I suggest using the continuous integration since Q, R are not discretized 
         #Pdot = A@P+P@A.transpose() + Q
         #P = P +Pdot*dt
-        Pdot = None # .. 
-        self.P = None  # ..
+
+        # No clue what I'm doing here lol what REVIEW THIS
+        Pdot = A@self.P+self.P@A.T + self.Q # maybe update self.pdot here, don't see a need to though
+        self.P = self.P + self.dt*Pdot #
         
         #Correction step
         #Get measurements 3 positions and 3 velocities from GPS
         self.z = np.array([[self.measure[6], self.measure[7], self.measure[8], self.measure[9], self.measure[10], self.measure[11]]]).T #x y z vx vy vz
-    
+
+
+        # PRETTY SURE I HAVE TO CORRECT TO INERTIAL FRAME? See rgps stuff in slides
         #Write out the measurement matrix linearization to get H
         
         # del v/del q
@@ -303,6 +350,56 @@ class ExtendedKalmanFilter(Node):
 
         self.loop_t += 1
         self.time.append(self.loop_t*self.dt)
+
+    def omega(self, p,q,r):
+        return np.array([
+            [0,p,q,r],
+            [-p,0,-r,q],
+            [-q,r,0,-p],
+            [-r,-q,p,0]
+        ])
+    
+    def dfvq(self, q1, q2, q3, q4,ax, ay, az):
+        return np.array([
+            [2*(q1*ax+q4*ay-q3*az),2*(q2*ax+q3*ay+q4*az), 2*(-q3*ax+q2*ay+q1*az), 2*(-q4*ax-q1*ay+q2*az)],
+            [2*(q4*ax + q1*ay-q2*az), 2*(q3*ax - q2*ay - q1*az), 2*(q2*ax+q3*ay+q4*az), 2*(q1*ax-q4*ay+q3*az)],
+            [2*(-q3*ax+q2*ay+q1*az), 2*(q4*ax + q1*ay - q2*az), 2*(-q1*ax + q4*ay - q3*az), 2*(q2*ax + q3*ay + q4*az)]
+        ])
+
+    def Rot(self, q1,q2,q3,q4):
+        return np.array([
+            [(q1**2+q2**2-q3**2-q4**2), 2*(q2*q3+q1*q4), 2*(q2*q4-q1*q3)],
+            [2*(q1*q3-q1*q4), (q1**2 - q2**2 + q3**2 - q4**2), 2*(q3*q4+q1*q2)],
+            [2*(q2*q4+q1*q3), 2*(q3*q4 - q1*q2), (q1**2 - q2**2 - q3**2 + q4**2)]
+        ])
+
+    def fqb(self, q1,q2,q3,q4):
+        return np.array([
+            [q1,q3,q4],
+            [-q1,q4,-q3],
+            [-q4,-q1,q2],
+            [q3,-q2,-q1]
+        ])
+    
+    def createA(self, fvq, fqq, fqb, fvb):
+        # cols are actually more than cols, they are just the sets of column I am breaking A into
+        col1 = np.vstack([self.Z, self.Z, self.Z43, self.Z, self.Z])
+        col2 = np.vstack([self.I, self.Z, self.Z43, self.Z, self.Z])
+        col3 = np.vstack([self.Z34, fvq, fqq, self.Z34, self.Z34])
+        col4 = np.vstack([self.Z, self.Z, fqb, self.Z, self.Z])
+        col5 = np.vstack([self.Z, fvb, self.Z43, self.Z, self.Z])
+
+        A = np.hstack([col1, col2, col3, col4, col5])
+        # print("col1 ",col1)
+        # print("col2 ",col2)
+        # print("col3 ",col3)
+        # print("col4 ",col4)
+        # print("col5 ",col5)
+
+        print ("A is: ", A)
+        return A
+
+
 
     def plot_data_callback(self):
 
