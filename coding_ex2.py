@@ -170,7 +170,7 @@ class ExtendedKalmanFilter(Node):
         self.r = self.measure[2]-self.xhat[12,0]
         self.fx = (self.measure[3]-self.xhat[13,0])
         self.fy = (self.measure[4]-self.xhat[14,0])
-        self.fz = -self.measure[5]-self.xhat[15,0]
+        self.fz = self.measure[5]-self.xhat[15,0]
         
         # Get the current quaternion values from the state vector
         # Remember again the state vector [x y z vx vy vz q1 q2 q3 q4 bp bq br bx by bz]
@@ -192,31 +192,31 @@ class ExtendedKalmanFilter(Node):
 
         pxdot = self.xhat[3,0]
         pydot = self.xhat[4,0]
-        pzdot = 0 # Pretty sure this is the right assumption
+        pzdot = self.xhat[5,0] # Pretty sure this is the right assumption -> can i just set to 0 ...
 
         # Putting accelerations into inertial frame
         accels = np.array([self.fx, self.fy, self.fz]) # biases already subtracted
-        print("accels shape:", accels.shape)
-
-        # self.Rot(self.q1, self.q2, self.q3, self.q4) -> using given rotation matrix instead for now
         vdots = self.R_bi@(accels)
 
         vxdot = vdots[0]
         vydot = vdots[1]
         vzdot = vdots[2]
 
-        print("vxdot: ", vxdot)
-        print("vydot: ", vydot)
-        print("vzdot: ", vzdot)
+        print("vzdot is: ", vzdot)
+
+        # print("vxdot: ", vxdot)
+        # print("vydot: ", vydot)
+        # print("vzdot: ", vzdot)
 
         # CHECK LATER -> Not sure if the math he did in the slide is with angle in front or back
-        omegaw = self.omega(self.p, self.q,self.r)
-        qdot = (-0.5)*omegaw@np.array([self.q1,self.q2, self.q3, self.q4]) 
+        omegaw = self.omega(self.p, self.q,self.r) # NOT SURE IF THIS SHOULD HAVE SUBTRACTED BIASES
+        # omegaw = self.omega(self.measure[0], self.measure[1], self.measure[2])
+        qdot = -(0.5)*omegaw@np.array([self.q1,self.q2, self.q3, self.q4]) 
 
-        q1dot = qdot[0] # x part of axis of rotation -> Not quite sure how to do this yet . . . 
-        q2dot = qdot[1] # y part of axis of rotation
-        q3dot = qdot[2] # z part of axis of rotation
-        q4dot = qdot[3] # This is the angle of rotation
+        q1dot = qdot[0] # This is the angle of rotation
+        q2dot = qdot[1] # x part of axis of rotation
+        q3dot = qdot[2] # y part of axis of rotation
+        q4dot = qdot[3] # z part of axis of rotation
         bpdot = 0
         bqdot = 0
         brdot = 0
@@ -233,10 +233,10 @@ class ExtendedKalmanFilter(Node):
         # Remember again the state vector [x y z vx vy vz q1 q2 q3 q4 bp bq br bx by bz]
         self.xhat[0,0] = self.xhat[0,0] + self.dt*pxdot
         self.xhat[1,0] = self.xhat[1,0] + self.dt*pydot # ..
-        self.xhat[2,0] = 0 # .. double check this
+        self.xhat[2,0] = self.xhat[2,0] + self.dt*pzdot # .. double check this
         self.xhat[3,0] = self.xhat[3,0] + self.dt*vxdot # vx = vx + deltaT*measuredAccelx (rotated into inertial frame)
         self.xhat[4,0] = self.xhat[4,0] + self.dt*vydot # vy = vy + deltaT*measuredAccely (rotated into inertial frame)
-        self.xhat[5,0] = self.xhat[5,0] + self.dt*(vzdot + 9.801) # .. Do not forget Gravity (9.801 m/s2) ????? -> NOT SURE WHAT TO DO HERE
+        self.xhat[5,0] = self.xhat[5,0] + self.dt*(vzdot - 9.801) # .. Do not forget Gravity (9.801 m/s2) ????? -> NOT SURE WHAT TO DO HERE
         self.xhat[6,0] = self.xhat[6,0] + self.dt*q1dot # ..
         self.xhat[7,0] = self.xhat[7,0] + self.dt*q2dot # ..
         self.xhat[8,0] = self.xhat[8,0] + self.dt*q3dot # ..
@@ -258,20 +258,31 @@ class ExtendedKalmanFilter(Node):
         self.xhat[7,0] = self.quat[1,0]
         self.xhat[8,0] = self.quat[2,0]
         self.xhat[9,0] = self.quat[3,0]
+
+        self.q1 = self.quat[0,0]
+        self.q2 = self.quat[1,0]
+        self.q3 = self.quat[2,0]
+        self.q4 = self.quat[3,0]
         
                 
         # Now write out all the partials to compute the transition matrix Phi
         #delV/delQ
         # TRIPLE CHECK THIS LATER, once again, not sure if the math is done with right quaternion order
 
-        Fvq = self.dfvq(self.quat[0,0], self.quat[1,0], self.quat[2,0], self.quat[3,0], self.fx, self.fy, self.fz)
+        Fvq = self.dfvq(self.quat[0,0], self.quat[1,0], self.quat[2,0], self.quat[3,0], self.fx, self.fy , self.fz)
         
         #delV/del_abias
         # Fvb = -self.Rot(self.quat[0,0], self.quat[1,0], self.quat[2,0], self.quat[3,0]) -> using given rotation matrix
+        # update rotation matrix
+
+        self.R_bi = np.array([[pow(self.q1,2)+pow(self.q2,2)-pow(self.q3,2)-pow(self.q4,2), 2*(self.q2*self.q3-self.q1*self.q4), 2*(self.q2*self.q4+self.q1*self.q3)],
+                          [2*(self.q2*self.q3+self.q1*self.q4), pow(self.q1,2)-pow(self.q2,2)+pow(self.q3,2)-pow(self.q4,2), 2*(self.q3*self.q4-self.q1*self.q2)],
+                          [2*(self.q2*self.q4-self.q1*self.q3), 2*(self.q3*self.q4+self.q1*self.q2), pow(self.q1,2)-pow(self.q2,2)-pow(self.q3,2)+pow(self.q4,2)]])
+        
         Fvb = -self.R_bi
         
         #delQ/delQ
-        Fqq = -0.5*omegaw # using the omega from above
+        Fqq = -0.5*omegaw# using the omega from above
      
         #delQ/del_gyrobias
         Fqb = self.fqb(self.quat[0,0], self.quat[1,0], self.quat[2,0], self.quat[3,0]) # ..
@@ -298,24 +309,25 @@ class ExtendedKalmanFilter(Node):
         
         # del v/del q
         
-        Hvq = None # ..
+        # not sure if P and Q here should be with biases subtracted or not, try both ... if not then it is just measure[1] and measure[2]
+        Hvq = self.hvq(self.rgps[0], q1 = self.quat[0,0], q2 = self.quat[1,0], q3 = self.quat[2,0], q4 = self.quat[3,0], Q = self.q, R = self.r) # angular rates, not other shit
         
         #del P/del q
-        Hxq = None # ..
+        Hxq = self.hxq(self.rgps[0], q1 = self.quat[0,0], q2 = self.quat[1,0], q3 = self.quat[2,0], q4 = self.quat[3,0])
         
         # Assemble H
-        H = None # ..
+        H = self.createH(hvq=Hvq, hxq=Hxq) # ..
 
         #Compute Kalman gain
         
-        L = None # Kalman gain
+        L =  self.P@H.T@np.linalg.inv(H@self.P@H.T+self.R)
         
         #Perform xhat correction    xhat = xhat + L@(z-H@xhat)
-        #self.xhat = None # .. uncomment
+        self.xhat = self.xhat + L@(self.z-H@self.xhat) # .. uncomment
         
         #propagate error covariance approximation P = (np.eye(16,16)-L@H)@P
         
-        self.P = None # ..
+        self.P = (np.eye(16,16) - L@H)@self.P # ..
 
         #Now let us do some book-keeping 
         # Get some Euler angles
@@ -329,10 +341,10 @@ class ExtendedKalmanFilter(Node):
           
         # Saving data for the plots. Uncomment the 4 lines below once you have finished the ekf function
 
-        #DP = np.diag(self.P)
-        #self.P_R.append(DP[0:3])
-        #self.P_R1.append(DP[3:6])
-        #self.P_R2.append(DP[6:10])
+        DP = np.diag(self.P)
+        self.P_R.append(DP[0:3])
+        self.P_R1.append(DP[3:6])
+        self.P_R2.append(DP[6:10])
         self.Pos.append(self.xhat[0:3].T[0])
         self.POS_X.append(self.xhat[0,0])
         self.POS_Y.append(self.xhat[1,0])
@@ -374,12 +386,13 @@ class ExtendedKalmanFilter(Node):
         ])
 
     def fqb(self, q1,q2,q3,q4):
-        return np.array([
-            [q1,q3,q4],
+        return 0.5*np.array([
+            [q2,q3,q4],
             [-q1,q4,-q3],
             [-q4,-q1,q2],
             [q3,-q2,-q1]
         ])
+    
     
     def createA(self, fvq, fqq, fqb, fvb):
         # cols are actually more than cols, they are just the sets of column I am breaking A into
@@ -396,18 +409,41 @@ class ExtendedKalmanFilter(Node):
         # print("col4 ",col4)
         # print("col5 ",col5)
 
-        print ("A is: ", A)
+        # print ("A is: ", A)
         return A
 
+    def hxq(self, rgps1, q1, q2, q3, q4):
+        return np.array([
+            [-rgps1*2*q1, -rgps1*2*q2, rgps1*2*q3, rgps1*2*q4],
+            [-rgps1*2*q4, -rgps1*2*q3, -rgps1*2*q2, -rgps1*2*q1],
+            [rgps1*2*q3, -rgps1*2*q4, rgps1*2*q1, -rgps1*2*q2]
+        ])
+    
+    def hvq(self, rgps1, q1, q2, q3, q4, Q, R):
+    
+        return np.array([
+            [rgps1*2*q3*Q + rgps1*2*q4*R,   rgps1*2*q4*Q - rgps1*2*q3*R,   rgps1*2*q1*Q - rgps1*2*q2*R,   rgps1*2*q2*Q + rgps1*2*q1*R],
+            [-rgps1*2*q2*Q - rgps1*2*q1*R,   rgps1*2*q2*R - rgps1*2*q1*Q,   rgps1*2*q4*Q - rgps1*2*q3*R,   rgps1*2*q3*Q + rgps1*2*q4*R],
+            [rgps1*2*q1*Q - rgps1*2*q2*R,   -rgps1*2*q2*Q - rgps1*2*q1*R,   -rgps1*2*q3*Q - rgps1*2*q4*R,   rgps1*2*q4*Q - rgps1*2*q3*R]
+        ])
+
+    def createH(self, hvq, hxq):
+        col1 = np.vstack([self.I, self.Z])
+        col2 = np.vstack([self.Z, self.I])
+        col3 = np.vstack([hxq, hvq])
+        col4 = np.vstack([self.Z36, self.Z36])
+        
+        H = np.hstack([col1, col2, col3, col4])
+        return H
 
 
     def plot_data_callback(self):
 
-        # plt.figure(1)
-        # plt.clf()
-        # plt.plot(self.time,self.PHI,'b', self.time, self.THETA, 'g', self.time,self.PSI, 'r')
-        # plt.legend(['phi','theta','psi'])
-        # plt.title('Phi, Theta, Psi [deg]')
+        plt.figure(1)
+        plt.clf()
+        plt.plot(self.time,self.PHI,'b', self.time, self.THETA, 'g', self.time,self.PSI, 'r')
+        plt.legend(['phi','theta','psi'])
+        plt.title('Phi, Theta, Psi [deg]')
 
         plt.figure(2)
         plt.clf()
@@ -448,11 +484,11 @@ class ExtendedKalmanFilter(Node):
         # plt.title('OMEGA with Bias')
         # plt.legend(['p','q','r'])
 
-        # plt.figure(10)
-        # plt.clf()
-        # plt.plot(self.time,self.Bias)
-        # plt.title('Gyroscope and accelerometer Bias')
-        # plt.legend(['bp','bq','br','bfx','bfy','bfz'])
+        plt.figure(10)
+        plt.clf()
+        plt.plot(self.time,self.Bias)
+        plt.title('Gyroscope and accelerometer Bias')
+        plt.legend(['bp','bq','br','bfx','bfy','bfz'])
                 
         plt.ion()
         plt.show()
