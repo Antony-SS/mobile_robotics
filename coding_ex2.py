@@ -170,7 +170,7 @@ class ExtendedKalmanFilter(Node):
         self.r = self.measure[2]-self.xhat[12,0]
         self.fx = (self.measure[3]-self.xhat[13,0])
         self.fy = (self.measure[4]-self.xhat[14,0])
-        self.fz = self.measure[5]-self.xhat[15,0]
+        self.fz = self.measure[5]-self.xhat[15,0] # corrected the given code here, not sure why sign was flipped
         
         # Get the current quaternion values from the state vector
         # Remember again the state vector [x y z vx vy vz q1 q2 q3 q4 bp bq br bx by bz]
@@ -208,9 +208,7 @@ class ExtendedKalmanFilter(Node):
         # print("vydot: ", vydot)
         # print("vzdot: ", vzdot)
 
-        # CHECK LATER -> Not sure if the math he did in the slide is with angle in front or back
-        omegaw = self.omega(self.p, self.q,self.r) # NOT SURE IF THIS SHOULD HAVE SUBTRACTED BIASES
-        # omegaw = self.omega(self.measure[0], self.measure[1], self.measure[2])
+        omegaw = self.omega(self.p, self.q,self.r)
         qdot = -(0.5)*omegaw@np.array([self.q1,self.q2, self.q3, self.q4]) 
 
         q1dot = qdot[0] # This is the angle of rotation
@@ -236,7 +234,7 @@ class ExtendedKalmanFilter(Node):
         self.xhat[2,0] = self.xhat[2,0] + self.dt*pzdot # .. double check this
         self.xhat[3,0] = self.xhat[3,0] + self.dt*vxdot # vx = vx + deltaT*measuredAccelx (rotated into inertial frame)
         self.xhat[4,0] = self.xhat[4,0] + self.dt*vydot # vy = vy + deltaT*measuredAccely (rotated into inertial frame)
-        self.xhat[5,0] = self.xhat[5,0] + self.dt*(vzdot - 9.801) # .. Do not forget Gravity (9.801 m/s2) ????? -> NOT SURE WHAT TO DO HERE
+        self.xhat[5,0] = self.xhat[5,0] + self.dt*(vzdot + 9.8066) # .. Do not forget Gravity (9.801 m/s2) -> 9.8066 is more exact
         self.xhat[6,0] = self.xhat[6,0] + self.dt*q1dot # ..
         self.xhat[7,0] = self.xhat[7,0] + self.dt*q2dot # ..
         self.xhat[8,0] = self.xhat[8,0] + self.dt*q3dot # ..
@@ -249,7 +247,6 @@ class ExtendedKalmanFilter(Node):
         # Extract and normalize the quat    
         self.quat = np.array([[self.xhat[6,0], self.xhat[7,0], self.xhat[8,0], self.xhat[9,0]]]).T
         # .. Normailize quat
-
         magnitude = np.sqrt(self.quat[0,0]**2 + self.quat[1,0]**2 + self.quat[2,0]**2 + self.quat[3,0]**2)
         self.quat = self.quat/magnitude # code here. Uncomment this line
         
@@ -267,17 +264,10 @@ class ExtendedKalmanFilter(Node):
                 
         # Now write out all the partials to compute the transition matrix Phi
         #delV/delQ
-        # TRIPLE CHECK THIS LATER, once again, not sure if the math is done with right quaternion order
-
+        # Triple check this
         Fvq = self.dfvq(self.quat[0,0], self.quat[1,0], self.quat[2,0], self.quat[3,0], self.fx, self.fy , self.fz)
         
-        #delV/del_abias
-        # Fvb = -self.Rot(self.quat[0,0], self.quat[1,0], self.quat[2,0], self.quat[3,0]) -> using given rotation matrix
-        # update rotation matrix
-
-        self.R_bi = np.array([[pow(self.q1,2)+pow(self.q2,2)-pow(self.q3,2)-pow(self.q4,2), 2*(self.q2*self.q3-self.q1*self.q4), 2*(self.q2*self.q4+self.q1*self.q3)],
-                          [2*(self.q2*self.q3+self.q1*self.q4), pow(self.q1,2)-pow(self.q2,2)+pow(self.q3,2)-pow(self.q4,2), 2*(self.q3*self.q4-self.q1*self.q2)],
-                          [2*(self.q2*self.q4-self.q1*self.q3), 2*(self.q3*self.q4+self.q1*self.q2), pow(self.q1,2)-pow(self.q2,2)-pow(self.q3,2)+pow(self.q4,2)]])
+        #delV/del_abias -> using the given rotation matrix
         
         Fvb = -self.R_bi
         
@@ -295,7 +285,7 @@ class ExtendedKalmanFilter(Node):
         #Pdot = A@P+P@A.transpose() + Q
         #P = P +Pdot*dt
 
-        # No clue what I'm doing here lol what REVIEW THIS
+        # -> this is the continuous time case
         Pdot = A@self.P+self.P@A.T + self.Q # maybe update self.pdot here, don't see a need to though
         self.P = self.P + self.dt*Pdot #
         
@@ -309,7 +299,7 @@ class ExtendedKalmanFilter(Node):
         
         # del v/del q
         
-        # not sure if P and Q here should be with biases subtracted or not, try both ... if not then it is just measure[1] and measure[2]
+        # not sure if P and Q here should be with biases subtracted or not
         Hvq = self.hvq(self.rgps[0], q1 = self.quat[0,0], q2 = self.quat[1,0], q3 = self.quat[2,0], q4 = self.quat[3,0], Q = self.q, R = self.r) # angular rates, not other shit
         
         #del P/del q
@@ -451,11 +441,11 @@ class ExtendedKalmanFilter(Node):
         plt.title('xy trajectory')
         plt.legend(['GPS','EKF'])
 
-        # plt.figure(3)
-        # plt.clf()
-        # plt.plot(self.time,self.P_R)
-        # plt.title('Covariance of Position')
-        # plt.legend(['px','py','pz'])
+        plt.figure(3)
+        plt.clf()
+        plt.plot(self.time,self.P_R)
+        plt.title('Covariance of Position')
+        plt.legend(['px','py','pz'])
         # plt.figure(4)
         # plt.clf()
         # plt.plot(self.time,self.P_R1)
