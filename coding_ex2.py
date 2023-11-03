@@ -111,6 +111,11 @@ class ExtendedKalmanFilter(Node):
         self.timer_ekf = self.create_timer(self.dt, self.ekf_callback)
         self.timer_plot = self.create_timer(1, self.plot_data_callback)
 
+        # create odom publisher
+        self.odom_pub = self.create_publisher(Odometry, 'odom', 10)
+
+        # to control when correction step is called for EKF
+        self.new_gps_measurement = False
     
     def callback_imu(self,msg):
         
@@ -136,10 +141,12 @@ class ExtendedKalmanFilter(Node):
             self.measure[6] = x
             self.measure[7] = y
             self.measure[8] = 0.0 
+            self.new_gps_measurement = True # flag to indicate we have new gps measurement, use this to "activate" correction step
 
     
     def callback_gps_lon(self, msg):
         self.lon = msg.data
+        self.new_gps_measurement = True # flag to indicate we have new gps measurement, 
         if (self.flag_lon == False): #just a trick to recover the initial value of longitude
             self.lon0 = msg.data
             self.flag_lon = True    
@@ -147,10 +154,11 @@ class ExtendedKalmanFilter(Node):
     def callback_gps_speed_east(self, msg): 
         self.measure[9] = msg.data # .data is right here.  Tested it.
         self.measure[11] = 0.0 # vz
+        self.new_gps_measurement = True # flag to indicate we have new gps measurement
 
     def callback_gps_speed_north(self, msg):
         self.measure[10] = msg.data # vy
-
+        self.new_gps_measurement = True # flag to indicate we have new gps measurement
    
     def ekf_callback(self):
         #print("iteration:  ",self.loop_t)
@@ -222,9 +230,6 @@ class ExtendedKalmanFilter(Node):
         bydot = 0
         bzdot = 0
         
-
-
-        # .. your code here
         
         #Now integrate Euler Integration for Process Updates and Covariance Updates
         # Euler works fine
@@ -260,8 +265,7 @@ class ExtendedKalmanFilter(Node):
         self.q2 = self.quat[1,0]
         self.q3 = self.quat[2,0]
         self.q4 = self.quat[3,0]
-        
-                
+
         # Now write out all the partials to compute the transition matrix Phi
         #delV/delQ
         # Triple check this
@@ -289,35 +293,36 @@ class ExtendedKalmanFilter(Node):
         Pdot = A@self.P+self.P@A.T + self.Q # maybe update self.pdot here, don't see a need to though
         self.P = self.P + self.dt*Pdot #
         
+
+        # THE PARTS BELOW SHOULD ONLY HAPPEN WHEN WE HAVE A NEW GPS MEASUREMENT!!
         #Correction step
-        #Get measurements 3 positions and 3 velocities from GPS
-        self.z = np.array([[self.measure[6], self.measure[7], self.measure[8], self.measure[9], self.measure[10], self.measure[11]]]).T #x y z vx vy vz
+    
+        if (self.new_gps_measurement):
+            #Get measurements 3 positions and 3 velocities from GPS
+            self.z = np.array([[self.measure[6], self.measure[7], self.measure[8], self.measure[9], self.measure[10], self.measure[11]]]).T #x y z vx vy vz
 
+            # PRETTY SURE I HAVE TO CORRECT TO INERTIAL FRAME? See rgps stuff in slides
+            #Write out the measurement matrix linearization to get H
+            
+            # del v/del q
+            Hvq = self.hvq(self.rgps[0], q1 = self.quat[0,0], q2 = self.quat[1,0], q3 = self.quat[2,0], q4 = self.quat[3,0], Q = self.q, R = self.r) # angular rates, not other shit
+            
+            #del P/del q
+            Hxq = self.hxq(self.rgps[0], q1 = self.quat[0,0], q2 = self.quat[1,0], q3 = self.quat[2,0], q4 = self.quat[3,0])
+            
+            # Assemble H
+            H = self.createH(hvq=Hvq, hxq=Hxq) # ..
 
-        # PRETTY SURE I HAVE TO CORRECT TO INERTIAL FRAME? See rgps stuff in slides
-        #Write out the measurement matrix linearization to get H
-        
-        # del v/del q
-        
-        # not sure if P and Q here should be with biases subtracted or not
-        Hvq = self.hvq(self.rgps[0], q1 = self.quat[0,0], q2 = self.quat[1,0], q3 = self.quat[2,0], q4 = self.quat[3,0], Q = self.q, R = self.r) # angular rates, not other shit
-        
-        #del P/del q
-        Hxq = self.hxq(self.rgps[0], q1 = self.quat[0,0], q2 = self.quat[1,0], q3 = self.quat[2,0], q4 = self.quat[3,0])
-        
-        # Assemble H
-        H = self.createH(hvq=Hvq, hxq=Hxq) # ..
+            #Compute Kalman gain
+            L =  self.P@H.T@np.linalg.inv(H@self.P@H.T+self.R)
+            
+            #Perform xhat correction    xhat = xhat + L@(z-H@xhat)
+            self.xhat = self.xhat + L@(self.z-H@self.xhat) # .. uncomment
+            
+            #propagate error covariance approximation P = (np.eye(16,16)-L@H)@P
+            self.P = (np.eye(16,16) - L@H)@self.P # ..
 
-        #Compute Kalman gain
-        
-        L =  self.P@H.T@np.linalg.inv(H@self.P@H.T+self.R)
-        
-        #Perform xhat correction    xhat = xhat + L@(z-H@xhat)
-        self.xhat = self.xhat + L@(self.z-H@self.xhat) # .. uncomment
-        
-        #propagate error covariance approximation P = (np.eye(16,16)-L@H)@P
-        
-        self.P = (np.eye(16,16) - L@H)@self.P # ..
+            self.new_gps_measurement = False # wait until we set the flag again in GPS callback
 
         #Now let us do some book-keeping 
         # Get some Euler angles
@@ -327,7 +332,33 @@ class ExtendedKalmanFilter(Node):
         self.PHI.append(phi*180/math.pi)
         self.THETA.append(theta*180/math.pi)
         self.PSI.append(psi*180/math.pi)
-    
+
+        # PUBLISH ODOM TOPIC
+        odom = Odometry()
+        odom.header.frame_id = "map" # -> this is the right frame to publish to for RVIZ so I don't need static transform
+        odom.header.stamp = self.get_clock().now().to_msg()
+
+         # Remember again the state vector [x y z vx vy vz q1 q2 q3 q4 bp bq br bx by bz]
+        # Pose and position
+        odom.pose.pose.position.x = self.xhat[0,0] # ...
+        odom.pose.pose.position.y = self.xhat[1,0] # ...
+        odom.pose.pose.position.z = self.xhat[2,0] # should always be very close to 0 
+
+        odom.pose.pose.orientation.x = self.quat[1,0]
+        odom.pose.pose.orientation.y = self.quat[2,0]
+        odom.pose.pose.orientation.z = self.quat[3,0]
+        odom.pose.pose.orientation.w = self.quat[0,0]
+
+        # Linear and angular velocities
+        odom.twist.twist.linear.x = self.xhat[3,0] # v* cos of heading
+        odom.twist.twist.linear.y = self.xhat[4,0] # v* sin of heading
+        odom.twist.twist.linear.z = self.xhat[5,0] # should be close to 0 most times
+        odom.twist.twist.angular.x = self.p # not stored in state vector, but we did calculate
+        odom.twist.twist.angular.y = self.q #  
+        odom.twist.twist.angular.z = self.r # 
+
+        self.odom_pub.publish(odom)
+
           
         # Saving data for the plots. Uncomment the 4 lines below once you have finished the ekf function
 
@@ -352,6 +383,7 @@ class ExtendedKalmanFilter(Node):
 
         self.loop_t += 1
         self.time.append(self.loop_t*self.dt)
+
 
     def omega(self, p,q,r):
         return np.array([
