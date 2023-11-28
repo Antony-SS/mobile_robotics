@@ -39,7 +39,7 @@ class CodingExercise3(Node):
         self.subscription_ekf = self.create_subscription(Odometry, 'terrasentia/ekf', self.callback_ekf, 10)
         self.subscription_scan = self.create_subscription(LaserScan, 'terrasentia/scan', self.callback_scan, 10)
         self.pub_lines = self.create_publisher(Marker, 'lines', 10)
-        self.timer_draw_line_example = self.create_timer(0.1, self.draw_line_example_callback)
+        # self.timer_draw_line_example = self.create_timer(0.1, self.draw_line_example_callback)
 
         # self.tf_broadcaster = TransformBroadcaster(self) # To broadcast static transform between map and odom (rate limited)
         # self.timer_transform = self.create_timer(0.005, self.transform_callback)
@@ -51,26 +51,47 @@ class CodingExercise3(Node):
    
     def callback_scan(self, msg):
         self.ranges = list(msg.ranges) # Lidar measurements
+         # idk why they do this . . . but i'll stick with their convention
         print("some-ranges:", self.ranges[0:5])
         print("Number of ranges:", len(self.ranges))
+        self.draw_line_example_callback()
 
     def draw_line_example_callback(self):
         # Here is just a simple example on how to draw a line on rviz using line markers. Feel free to use any other method
-        p0 = Point()
-        p0.x = 0.0
-        p0.y = 0.0
-        p0.z = 0.0
 
-        p1 = Point()
-        p1.x = 1.0
-        p1.y = 1.0
-        p1.z = 1.0
+        # this is how I wait for first measurement
+        ranges = np.array(self.ranges).reshape(-1,1)
+        print(ranges)
+        thetas = np.linspace(-np.pi/4, 5*np.pi/4, 1081).reshape(-1,1)
+        points = np.hstack([ranges, thetas])
 
-        self.point_list.append(copy(p0)) 
-        self.point_list.append(copy(p1)) # You can append more pairs of points
-        self.line.points = self.point_list
+        filter = points[: , 0] < 20 # remove far points
+        points = points[filter]
 
+        ranges = points[:, 0].reshape(-1,1)
+        thetas = points[:,1].reshape(-1,1)
+        
+        lineSplit = self.split_and_merge(ranges, thetas)
+
+        for line in lineSplit:
+            startPt = line[0]
+            endPt = line[-1]
+
+            p0 = Point()
+            p0.x = startPt[0]
+            p0.y = startPt[1]
+            p0.z = 0.0
+
+            p1 = Point()
+            p1.x = endPt[0]
+            p1.y = endPt[1]
+            p1.z = 0.0
+
+            self.point_list.append(copy(p0)) 
+            self.point_list.append(copy(p1)) # You can append more pairs of points
+            self.line.points = self.point_list
         self.pub_lines.publish(self.line) # It will draw a line between each pair of points
+        self.point_list.clear()
 
     def line_marker_init(self, line):
         line.header.frame_id="/odom"
@@ -134,7 +155,7 @@ class CodingExercise3(Node):
 
 
     def split_helper(self, splitList,set):
-        THRESH = 0.4 # can play with this, think 1m is good
+        THRESH = 0.01 # can play with this, think .1 is good
         # find point with max distance from said line
         maxdist = (-1, -1) # distance, index
         # check stop condition -> this means that we can't have a line w/ less than three points, can't have singular points as boundaries
@@ -198,12 +219,12 @@ class CodingExercise3(Node):
 
             # will do this based on ratio where 1 is perfect colinearlity
             # print("ratio is ", ratio)
-            condition2 = (ratio > 0.8 and ratio < 1.2)
+            condition2 = (ratio > 0.7 and ratio < 1.3)
 
             # this is because we have to code around that face that -.2 and 0.2 will be at most 0.4 apart in slope, but our ratio won't recognize it
             # I'm sure I could go to polar coordinates and do this in a prettier way with atan2, but this works for now
             if not condition2:
-                if (abs(slopeLine1) < 0.2  and abs (slopeLine1) < 0.2):
+                if (abs(slopeLine1) < 0.3  and abs (slopeLine2) < 0.3):
                     condition2 = True
             
             # merge, reset list index
@@ -214,7 +235,7 @@ class CodingExercise3(Node):
                 splitList.insert(i, mergedLine)
                 # print(splitList)
                 # print(len(splitList))
-                i = i-2 # b/c it will index below and we want to be 0 and we have to reconsider whole list
+                i = -1 # b/c it will index below and we want to be 0 and we have to reconsider whole list
             
             i += 1
 
